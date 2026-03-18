@@ -1,0 +1,357 @@
+import { COOKIE_NAME } from "@shared/const";
+import { getSessionCookieOptions } from "./_core/cookies";
+import { systemRouter } from "./_core/systemRouter";
+import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { z } from "zod";
+import * as db from "./db";
+import { TRPCError } from "@trpc/server";
+import { paymentRouter } from "./routers/payment";
+
+export const appRouter = router({
+  system: systemRouter,
+  payment: paymentRouter,
+
+  // ==================== AUTH ====================
+  auth: router({
+    me: publicProcedure.query((opts) => opts.ctx.user),
+    logout: publicProcedure.mutation(({ ctx }) => {
+      const cookieOptions = getSessionCookieOptions(ctx.req);
+      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      return {
+        success: true,
+      } as const;
+    }),
+  }),
+
+  // ==================== USER ====================
+  user: router({
+    profile: protectedProcedure.query(async ({ ctx }) => {
+      const user = ctx.user;
+      if (!user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+      const xpTotal = await db.getUserXPTotal(user.id);
+      const badges = await db.getUserBadges(user.id);
+      const notifications = await db.getUserNotifications(user.id, 5);
+
+      return {
+        ...user,
+        xpTotal,
+        badgeCount: badges.length,
+        unreadNotifications: notifications.filter((n: any) => !n.read).length,
+      };
+    }),
+
+    updateProfile: protectedProcedure
+      .input(
+        z.object({
+          name: z.string().optional(),
+          email: z.string().email().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        // In production, use proper update logic
+        return { success: true };
+      }),
+
+    stats: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+      const xpTotal = await db.getUserXPTotal(ctx.user.id);
+      const badges = await db.getUserBadges(ctx.user.id);
+      const xpHistory = await db.getUserXPHistory(ctx.user.id, 10);
+      const bookings = await db.getBookingsByUser(ctx.user.id);
+
+      return {
+        xpTotal,
+        badgeCount: badges.length,
+        bookingCount: bookings.length,
+        xpHistory: xpHistory.map((x) => ({
+          amount: x.xpAmount,
+          source: x.source,
+          date: x.timestamp,
+        })),
+      };
+    }),
+  }),
+
+  // ==================== POI ====================
+  poi: router({
+    list: publicProcedure
+      .input(
+        z.object({
+          category: z.enum(["Cultura", "Natura", "Food", "Eventi", "Segreto"]).optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getPOIList(input.category);
+      }),
+
+    detail: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const poi = await db.getPOIById(input.id);
+        if (!poi) throw new TRPCError({ code: "NOT_FOUND" });
+        return poi;
+      }),
+
+    nearby: publicProcedure
+      .input(
+        z.object({
+          latitude: z.number(),
+          longitude: z.number(),
+          radiusKm: z.number().default(5),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getPOIsNearby(input.latitude, input.longitude, input.radiusKm);
+      }),
+
+    checkIn: protectedProcedure
+      .input(
+        z.object({
+          poiId: z.number(),
+          latitude: z.number(),
+          longitude: z.number(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        const poi = await db.getPOIById(input.poiId);
+        if (!poi) throw new TRPCError({ code: "NOT_FOUND" });
+
+        // Verify proximity (simplified - within 100m)
+        const latDiff = Math.abs(poi.latitude - input.latitude);
+        const lonDiff = Math.abs(poi.longitude - input.longitude);
+        if (latDiff > 0.001 || lonDiff > 0.001) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Too far from POI" });
+        }
+
+        // Award XP
+        await db.addUserXP(ctx.user.id, poi.xpReward, "checkIn", poi.id, `Visited ${poi.name}`);
+
+        // Check for badge unlocks (simplified)
+        const badges = await db.getAllBadges();
+        for (const badge of badges) {
+          if (badge.requirement.includes("Cultura") && poi.category === "Cultura") {
+            await db.unlockBadge(ctx.user.id, badge.id);
+          }
+        }
+
+        return {
+          success: true,
+          xpAwarded: poi.xpReward,
+          poiName: poi.name,
+        };
+      }),
+  }),
+
+  // ==================== BADGE ====================
+  badge: router({
+    list: publicProcedure.query(async () => {
+      return db.getAllBadges();
+    }),
+
+    userBadges: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return db.getUserBadges(ctx.user.id);
+    }),
+  }),
+
+  // ==================== COUPON ====================
+  coupon: router({
+    list: publicProcedure
+      .input(
+        z.object({
+          partnerId: z.number().optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getCouponList(input.partnerId);
+      }),
+
+    redeem: protectedProcedure
+      .input(z.object({ couponId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        const success = await db.redeemCoupon(ctx.user.id, input.couponId);
+        if (!success) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Cannot redeem coupon" });
+        }
+
+        // Award XP bonus
+        await db.addUserXP(ctx.user.id, 50, "bonus", undefined, "Redeemed coupon");
+
+        return { success: true };
+      }),
+  }),
+
+  // ==================== TOUR ====================
+  tour: router({
+    list: publicProcedure
+      .input(
+        z.object({
+          partnerId: z.number().optional(),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getTourList(input.partnerId);
+      }),
+
+    detail: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const tour = await db.getTourById(input.id);
+        if (!tour) throw new TRPCError({ code: "NOT_FOUND" });
+        return tour;
+      }),
+  }),
+
+  // ==================== BOOKING ====================
+  booking: router({
+    create: protectedProcedure
+      .input(
+        z.object({
+          tourId: z.number(),
+          participants: z.number().min(1),
+          totalPrice: z.number().min(0),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        const tour = await db.getTourById(input.tourId);
+        if (!tour) throw new TRPCError({ code: "NOT_FOUND" });
+
+        await db.createBooking(
+          ctx.user.id,
+          input.tourId,
+          input.participants,
+          input.totalPrice
+        );
+
+        return {
+          success: true,
+          message: "Booking created. Proceed to payment.",
+        };
+      }),
+
+    list: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return db.getBookingsByUser(ctx.user.id);
+    }),
+  }),
+
+  // ==================== CHALLENGE ====================
+  challenge: router({
+    list: publicProcedure.query(async () => {
+      return db.getActiveChallenges();
+    }),
+
+    join: protectedProcedure
+      .input(z.object({ challengeId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        await db.joinChallenge(ctx.user.id, input.challengeId);
+
+        return { success: true };
+      }),
+
+    userChallenges: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return db.getUserChallenges(ctx.user.id);
+    }),
+  }),
+
+  // ==================== NOTIFICATION ====================
+  notification: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return db.getUserNotifications(ctx.user.id, 20);
+    }),
+
+    markAsRead: protectedProcedure
+      .input(z.object({ notificationId: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.markNotificationAsRead(input.notificationId);
+        return { success: true };
+      }),
+
+    registerDeviceToken: protectedProcedure
+      .input(z.object({ deviceToken: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+        await db.saveDeviceToken(ctx.user.id, input.deviceToken);
+        return { success: true, message: "Device token registered" };
+      }),
+  }),
+
+  // ==================== LEADERBOARD ====================
+  leaderboard: router({
+    global: publicProcedure
+      .input(
+        z.object({
+          timeframe: z.enum(["week", "month", "all"]).default("all"),
+          limit: z.number().default(100),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getLeaderboard(input.limit, input.timeframe);
+      }),
+  }),
+
+  // ==================== SOCIAL ====================
+  social: router({
+    share: protectedProcedure
+      .input(
+        z.object({
+          platform: z.enum(["instagram", "tiktok", "twitter", "facebook"]),
+          content: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        await db.recordSocialShare(ctx.user.id, input.platform, input.content);
+
+        // Award referral XP
+        await db.addUserXP(ctx.user.id, 25, "referral", undefined, `Shared on ${input.platform}`);
+
+        return {
+          success: true,
+          message: `Shared on ${input.platform}! +25 XP`,
+          shareUrl: `https://beehunter.app?ref=${ctx.user.id}`,
+          hashtag: "#BeeHunter",
+        };
+      }),
+  }),
+
+  // ==================== GDPR ====================
+  gdpr: router({
+    recordConsent: protectedProcedure
+      .input(
+        z.object({
+          consentType: z.enum(["privacy", "marketing", "analytics", "cookies"]),
+          granted: z.boolean(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+
+        await db.recordGdprConsent(ctx.user.id, input.consentType, input.granted);
+
+        return { success: true };
+      }),
+
+    getConsents: protectedProcedure.query(async ({ ctx }) => {
+      if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
+      return db.getUserGdprConsents(ctx.user.id);
+    }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;

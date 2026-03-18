@@ -1,0 +1,541 @@
+import { eq, and, gte, lte, desc, asc, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/mysql2";
+import {
+  InsertUser,
+  users,
+  partners,
+  poi,
+  userXp,
+  badges,
+  userBadges,
+  coupon,
+  tours,
+  bookings,
+  notifications,
+  challenges,
+  userChallenges,
+  gdprConsents,
+  auditLog,
+  deviceTokens,
+  socialShares,
+  couponRedemptions,
+} from "../drizzle/schema";
+import { ENV } from "./_core/env";
+
+let _db: ReturnType<typeof drizzle> | null = null;
+
+export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      _db = drizzle(process.env.DATABASE_URL);
+    } catch (error) {
+      console.warn("[Database] Failed to connect:", error);
+      _db = null;
+    }
+  }
+  return _db;
+}
+
+export async function upsertUser(user: InsertUser): Promise<void> {
+  if (!user.openId) {
+    throw new Error("User openId is required for upsert");
+  }
+
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot upsert user: database not available");
+    return;
+  }
+
+  try {
+    const values: InsertUser = {
+      openId: user.openId,
+    };
+    const updateSet: Record<string, unknown> = {};
+
+    const textFields = ["name", "email", "loginMethod"] as const;
+    type TextField = (typeof textFields)[number];
+
+    const assignNullable = (field: TextField) => {
+      const value = user[field];
+      if (value === undefined) return;
+      const normalized = value ?? null;
+      values[field] = normalized;
+      updateSet[field] = normalized;
+    };
+
+    textFields.forEach(assignNullable);
+
+    if (user.lastSignedIn !== undefined) {
+      values.lastSignedIn = user.lastSignedIn;
+      updateSet.lastSignedIn = user.lastSignedIn;
+    }
+    if (user.role !== undefined) {
+      values.role = user.role;
+      updateSet.role = user.role;
+    } else if (user.openId === ENV.ownerOpenId) {
+      values.role = "admin";
+      updateSet.role = "admin";
+    }
+
+    if (!values.lastSignedIn) {
+      values.lastSignedIn = new Date();
+    }
+
+    if (Object.keys(updateSet).length === 0) {
+      updateSet.lastSignedIn = new Date();
+    }
+
+    await db.insert(users).values(values).onDuplicateKeyUpdate({
+      set: updateSet,
+    });
+  } catch (error) {
+    console.error("[Database] Failed to upsert user:", error);
+    throw error;
+  }
+}
+
+export async function getUserByOpenId(openId: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get user: database not available");
+    return undefined;
+  }
+
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.openId, openId))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+// ==================== POI Queries ====================
+
+export async function getPOIList(category?: string) {
+  const db = await getDb();
+  if (!db) return [];
+
+  if (category) {
+    return db.select().from(poi).where(eq(poi.category, category as any));
+  }
+  return db.select().from(poi);
+}
+
+export async function getPOIById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(poi).where(eq(poi.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getPOIsNearby(latitude: number, longitude: number, radiusKm: number = 5) {
+  const db = await getDb();
+  if (!db) return [];
+
+  // Simplified distance calculation
+  const latDelta = radiusKm / 111;
+  const cosLat = Math.cos((latitude * Math.PI) / 180);
+  const lonDelta = radiusKm / (111 * cosLat);
+  
+  const result = await db
+    .select()
+    .from(poi)
+    .where(
+      and(
+        gte(poi.latitude, latitude - latDelta),
+        lte(poi.latitude, latitude + latDelta),
+        gte(poi.longitude, longitude - lonDelta),
+        lte(poi.longitude, longitude + lonDelta)
+      )
+    );
+
+  return result;
+}
+
+// ==================== XP Queries ====================
+
+export async function getUserXPTotal(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const result = await db
+    .select({ total: sql<number>`SUM(${userXp.xpAmount})` })
+    .from(userXp)
+    .where(eq(userXp.userId, userId));
+
+  return result[0]?.total ?? 0;
+}
+
+export async function addUserXP(userId: number, amount: number, source: string, poiId?: number, description?: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.insert(userXp).values({
+    userId,
+    poiId,
+    xpAmount: amount,
+    source: source as any,
+    description,
+  });
+
+  // Update user total XP
+  const total = await getUserXPTotal(userId);
+  await db.update(users).set({ xpTotal: total }).where(eq(users.id, userId));
+}
+
+export async function getUserXPHistory(userId: number, limit: number = 50) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(userXp)
+    .where(eq(userXp.userId, userId))
+    .orderBy(desc(userXp.timestamp))
+    .limit(limit);
+}
+
+// ==================== Badge Queries ====================
+
+export async function getAllBadges() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db.select().from(badges).orderBy(asc(badges.tier));
+}
+
+export async function getUserBadges(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(userBadges)
+    .innerJoin(badges, eq(userBadges.badgeId, badges.id))
+    .where(eq(userBadges.userId, userId));
+}
+
+export async function unlockBadge(userId: number, badgeId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  // Check if already unlocked
+  const existing = await db
+    .select()
+    .from(userBadges)
+    .where(and(eq(userBadges.userId, userId), eq(userBadges.badgeId, badgeId)))
+    .limit(1);
+
+  if (existing.length > 0) return; // Already unlocked
+
+  await db.insert(userBadges).values({ userId, badgeId });
+
+  // Add XP reward
+  const badge = await db.select().from(badges).where(eq(badges.id, badgeId)).limit(1);
+  if (badge.length > 0 && badge[0].xpReward) {
+    await addUserXP(userId, badge[0].xpReward, "badge", undefined, `Unlocked badge: ${badge[0].name}`);
+  }
+}
+
+// ==================== Coupon Queries ====================
+
+export async function getCouponList(partnerId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const query = partnerId
+    ? db.select().from(coupon).where(and(eq(coupon.partnerId, partnerId), eq(coupon.active, true)))
+    : db.select().from(coupon).where(eq(coupon.active, true));
+
+  return query.orderBy(asc(coupon.expiresAt));
+}
+
+export async function getCouponByCode(code: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(coupon)
+    .where(and(eq(coupon.code, code), eq(coupon.active, true)))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function redeemCoupon(userId: number, couponId: number) {
+  const db = await getDb();
+  if (!db) return false;
+
+  const couponRecord = await db.select().from(coupon).where(eq(coupon.id, couponId)).limit(1);
+  if (couponRecord.length === 0) return false;
+
+  const c = couponRecord[0];
+
+  // Check if expired
+  if (new Date() > c.expiresAt) return false;
+
+  // Check if max redeems reached
+  if (c.maxRedeems && c.redeemCount >= c.maxRedeems) return false;
+
+  // Check if already redeemed by user
+  const existing = await db
+    .select()
+    .from(couponRedemptions)
+    .where(and(eq(couponRedemptions.userId, userId), eq(couponRedemptions.couponId, couponId)))
+    .limit(1);
+
+  if (existing.length > 0) return false; // Already redeemed
+
+  // Record redemption
+  await db.insert(couponRedemptions).values({ userId, couponId });
+
+  // Increment redeem count
+  await db
+    .update(coupon)
+    .set({ redeemCount: c.redeemCount + 1 })
+    .where(eq(coupon.id, couponId));
+
+  return true;
+}
+
+// ==================== Tour & Booking Queries ====================
+
+export async function getTourList(partnerId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const query = partnerId
+    ? db.select().from(tours).where(and(eq(tours.partnerId, partnerId), eq(tours.active, true)))
+    : db.select().from(tours).where(eq(tours.active, true));
+
+  return query;
+}
+
+export async function getTourById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(tours).where(eq(tours.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createBooking(userId: number, tourId: number, participants: number, totalPrice: number, stripePaymentId?: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.insert(bookings).values({
+    userId,
+    tourId,
+    participants,
+    totalPrice: totalPrice.toString(),
+    stripePaymentId,
+    status: "pending",
+  });
+
+  return result;
+}
+
+export async function getBookingsByUser(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db.select().from(bookings).where(eq(bookings.userId, userId)).orderBy(desc(bookings.createdAt));
+}
+
+// ==================== Challenge Queries ====================
+
+export async function getActiveChallenges() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(challenges)
+    .where(and(eq(challenges.active, true), gte(challenges.endDate, new Date())))
+    .orderBy(asc(challenges.endDate));
+}
+
+export async function joinChallenge(userId: number, challengeId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  // Check if already joined
+  const existing = await db
+    .select()
+    .from(userChallenges)
+    .where(and(eq(userChallenges.userId, userId), eq(userChallenges.challengeId, challengeId)))
+    .limit(1);
+
+  if (existing.length === 0) {
+    await db.insert(userChallenges).values({ userId, challengeId });
+  }
+}
+
+export async function getUserChallenges(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(userChallenges)
+    .innerJoin(challenges, eq(userChallenges.challengeId, challenges.id))
+    .where(eq(userChallenges.userId, userId));
+}
+
+// ==================== Notification Queries ====================
+
+export async function createNotification(userId: number, title: string, message: string, type: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.insert(notifications).values({
+    userId,
+    title,
+    message,
+    type: type as any,
+  });
+}
+
+export async function getUserNotifications(userId: number, limit: number = 20) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(notifications)
+    .where(eq(notifications.userId, userId))
+    .orderBy(desc(notifications.createdAt))
+    .limit(limit);
+}
+
+export async function markNotificationAsRead(notificationId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.update(notifications).set({ read: true }).where(eq(notifications.id, notificationId));
+}
+
+// ==================== GDPR Queries ====================
+
+export async function recordGdprConsent(userId: number, consentType: string, granted: boolean) {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.insert(gdprConsents).values({
+    userId,
+    consentType: consentType as any,
+    granted,
+  });
+}
+
+export async function getUserGdprConsents(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db.select().from(gdprConsents).where(eq(gdprConsents.userId, userId));
+}
+
+// ==================== Audit Log ====================
+
+export async function logAuditEvent(userId: number | null, action: string, resource: string, details?: any) {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.insert(auditLog).values({
+    userId,
+    action,
+    resource,
+    details,
+  });
+}
+
+// ==================== Device Tokens ====================
+
+export async function registerDeviceToken(userId: number, token: string, userAgent?: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  // Check if token already exists
+  const existing = await db
+    .select()
+    .from(deviceTokens)
+    .where(eq(deviceTokens.token, token))
+    .limit(1);
+
+  if (existing.length === 0) {
+    await db.insert(deviceTokens).values({ userId, token, userAgent });
+  }
+}
+
+export async function getUserDeviceTokens(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db.select().from(deviceTokens).where(eq(deviceTokens.userId, userId));
+}
+
+export async function saveDeviceToken(userId: number, token: string, userAgent?: string) {
+  return registerDeviceToken(userId, token, userAgent);
+}
+
+// ==================== Social Shares ====================
+
+export async function recordSocialShare(userId: number, platform: string, content?: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.insert(socialShares).values({
+    userId,
+    platform: platform as any,
+    content,
+  });
+}
+
+// ==================== Leaderboard ====================
+
+export async function getLeaderboard(limit: number = 100, timeframe: "week" | "month" | "all" = "all") {
+  const db = await getDb();
+  if (!db) return [];
+
+  const now = new Date();
+  let startDate: Date;
+
+  if (timeframe === "week") {
+    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  } else if (timeframe === "month") {
+    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  } else {
+    startDate = new Date(0);
+  }
+
+  if (timeframe === "all") {
+    // Use total XP from users table
+    return db
+      .select({
+        userId: users.id,
+        name: users.name,
+        xp: users.xpTotal,
+      })
+      .from(users)
+      .orderBy(desc(users.xpTotal))
+      .limit(limit);
+  } else {
+    // Calculate XP for timeframe
+    return db
+      .select({
+        userId: users.id,
+        name: users.name,
+        xp: sql<number>`SUM(${userXp.xpAmount})`,
+      })
+      .from(users)
+      .innerJoin(userXp, eq(users.id, userXp.userId))
+      .where(gte(userXp.timestamp, startDate))
+      .groupBy(users.id, users.name)
+      .orderBy(desc(sql<number>`SUM(${userXp.xpAmount})`))  
+      .limit(limit);
+  }
+}

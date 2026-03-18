@@ -1,0 +1,232 @@
+CREATE TABLE `auditLog` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int,
+	`action` varchar(255) NOT NULL,
+	`resource` varchar(255) NOT NULL,
+	`details` json,
+	`timestamp` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `auditLog_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `badges` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`name` varchar(255) NOT NULL,
+	`description` text,
+	`icon` varchar(512),
+	`requirement` varchar(255) NOT NULL,
+	`tier` enum('bronze','silver','gold','platinum') NOT NULL DEFAULT 'bronze',
+	`xpReward` int DEFAULT 0,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `badges_id` PRIMARY KEY(`id`),
+	CONSTRAINT `badges_name_unique` UNIQUE(`name`),
+	CONSTRAINT `badges_name_idx` UNIQUE(`name`)
+);
+--> statement-breakpoint
+CREATE TABLE `bookings` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`tourId` int NOT NULL,
+	`stripePaymentId` varchar(255),
+	`status` enum('pending','confirmed','cancelled','completed') NOT NULL DEFAULT 'pending',
+	`participants` int NOT NULL DEFAULT 1,
+	`totalPrice` decimal(10,2) NOT NULL,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `bookings_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `challenges` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`title` varchar(255) NOT NULL,
+	`description` text,
+	`objective` varchar(255) NOT NULL,
+	`xpReward` int NOT NULL DEFAULT 100,
+	`startDate` timestamp NOT NULL,
+	`endDate` timestamp NOT NULL,
+	`active` boolean NOT NULL DEFAULT true,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `challenges_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `coupon` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`partnerId` int NOT NULL,
+	`code` varchar(64) NOT NULL,
+	`title` varchar(255) NOT NULL,
+	`description` text,
+	`discount` varchar(64) NOT NULL,
+	`expiresAt` timestamp NOT NULL,
+	`redeemCount` int NOT NULL DEFAULT 0,
+	`maxRedeems` int,
+	`active` boolean NOT NULL DEFAULT true,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `coupon_id` PRIMARY KEY(`id`),
+	CONSTRAINT `coupon_code_unique` UNIQUE(`code`),
+	CONSTRAINT `coupon_code_idx` UNIQUE(`code`)
+);
+--> statement-breakpoint
+CREATE TABLE `couponRedemptions` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`couponId` int NOT NULL,
+	`redeemedAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `couponRedemptions_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `deviceTokens` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`token` varchar(512) NOT NULL,
+	`userAgent` text,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `deviceTokens_id` PRIMARY KEY(`id`),
+	CONSTRAINT `deviceTokens_token_unique` UNIQUE(`token`),
+	CONSTRAINT `deviceTokens_token_idx` UNIQUE(`token`)
+);
+--> statement-breakpoint
+CREATE TABLE `gdprConsents` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`consentType` enum('privacy','marketing','analytics','cookies') NOT NULL,
+	`granted` boolean NOT NULL,
+	`timestamp` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `gdprConsents_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `notifications` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`title` varchar(255) NOT NULL,
+	`message` text,
+	`type` enum('poi','challenge','event','booking','system') NOT NULL,
+	`read` boolean NOT NULL DEFAULT false,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `notifications_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `partners` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`businessName` varchar(255) NOT NULL,
+	`category` enum('Restaurant','Hotel','TourOperator','Shop','Other') NOT NULL,
+	`description` text,
+	`location` varchar(255),
+	`latitude` double,
+	`longitude` double,
+	`contactEmail` varchar(320) NOT NULL,
+	`phone` varchar(20),
+	`website` varchar(255),
+	`verified` boolean NOT NULL DEFAULT false,
+	`stripeAccountId` varchar(255),
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `partners_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `poi` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`name` varchar(255) NOT NULL,
+	`category` enum('Cultura','Natura','Food','Eventi','Segreto') NOT NULL,
+	`description` text,
+	`latitude` double NOT NULL,
+	`longitude` double NOT NULL,
+	`xpReward` int NOT NULL DEFAULT 100,
+	`imageUrl` varchar(512),
+	`qrCode` varchar(512),
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `poi_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `socialShares` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`platform` enum('instagram','tiktok','twitter','facebook') NOT NULL,
+	`content` varchar(255),
+	`timestamp` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `socialShares_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `tours` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`partnerId` int NOT NULL,
+	`title` varchar(255) NOT NULL,
+	`description` text,
+	`price` decimal(10,2) NOT NULL,
+	`duration` int,
+	`maxParticipants` int,
+	`imageUrl` varchar(512),
+	`schedule` json,
+	`active` boolean NOT NULL DEFAULT true,
+	`createdAt` timestamp NOT NULL DEFAULT (now()),
+	`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
+	CONSTRAINT `tours_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+CREATE TABLE `userBadges` (
+	`userId` int NOT NULL,
+	`badgeId` int NOT NULL,
+	`unlockedAt` timestamp NOT NULL DEFAULT (now())
+);
+--> statement-breakpoint
+CREATE TABLE `userChallenges` (
+	`userId` int NOT NULL,
+	`challengeId` int NOT NULL,
+	`progress` int NOT NULL DEFAULT 0,
+	`completed` boolean NOT NULL DEFAULT false,
+	`completedAt` timestamp,
+	`joinedAt` timestamp NOT NULL DEFAULT (now())
+);
+--> statement-breakpoint
+CREATE TABLE `userXp` (
+	`id` int AUTO_INCREMENT NOT NULL,
+	`userId` int NOT NULL,
+	`poiId` int,
+	`xpAmount` int NOT NULL,
+	`source` enum('checkIn','challenge','referral','badge','bonus') NOT NULL,
+	`description` varchar(255),
+	`timestamp` timestamp NOT NULL DEFAULT (now()),
+	CONSTRAINT `userXp_id` PRIMARY KEY(`id`)
+);
+--> statement-breakpoint
+ALTER TABLE `users` MODIFY COLUMN `role` enum('user','partner','admin') NOT NULL DEFAULT 'user';--> statement-breakpoint
+ALTER TABLE `users` ADD `xpTotal` int DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE `users` ADD `premiumUntil` timestamp;--> statement-breakpoint
+ALTER TABLE `users` ADD `streakDays` int DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE `users` ADD `lastActivityAt` timestamp DEFAULT (now()) NOT NULL;--> statement-breakpoint
+ALTER TABLE `users` ADD `gdprConsent` boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE `users` ADD `marketingConsent` boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE `users` ADD CONSTRAINT `users_email_unique` UNIQUE(`email`);--> statement-breakpoint
+ALTER TABLE `users` ADD CONSTRAINT `openId_idx` UNIQUE(`openId`);--> statement-breakpoint
+CREATE INDEX `auditLog_userId_idx` ON `auditLog` (`userId`);--> statement-breakpoint
+CREATE INDEX `auditLog_action_idx` ON `auditLog` (`action`);--> statement-breakpoint
+CREATE INDEX `auditLog_timestamp_idx` ON `auditLog` (`timestamp`);--> statement-breakpoint
+CREATE INDEX `bookings_userId_idx` ON `bookings` (`userId`);--> statement-breakpoint
+CREATE INDEX `bookings_tourId_idx` ON `bookings` (`tourId`);--> statement-breakpoint
+CREATE INDEX `bookings_status_idx` ON `bookings` (`status`);--> statement-breakpoint
+CREATE INDEX `challenges_active_idx` ON `challenges` (`active`);--> statement-breakpoint
+CREATE INDEX `challenges_startDate_idx` ON `challenges` (`startDate`);--> statement-breakpoint
+CREATE INDEX `coupon_partnerId_idx` ON `coupon` (`partnerId`);--> statement-breakpoint
+CREATE INDEX `coupon_expiresAt_idx` ON `coupon` (`expiresAt`);--> statement-breakpoint
+CREATE INDEX `couponRedemptions_userId_idx` ON `couponRedemptions` (`userId`);--> statement-breakpoint
+CREATE INDEX `couponRedemptions_couponId_idx` ON `couponRedemptions` (`couponId`);--> statement-breakpoint
+CREATE INDEX `deviceTokens_userId_idx` ON `deviceTokens` (`userId`);--> statement-breakpoint
+CREATE INDEX `gdprConsents_userId_idx` ON `gdprConsents` (`userId`);--> statement-breakpoint
+CREATE INDEX `notifications_userId_idx` ON `notifications` (`userId`);--> statement-breakpoint
+CREATE INDEX `notifications_read_idx` ON `notifications` (`read`);--> statement-breakpoint
+CREATE INDEX `partners_userId_idx` ON `partners` (`userId`);--> statement-breakpoint
+CREATE INDEX `partners_verified_idx` ON `partners` (`verified`);--> statement-breakpoint
+CREATE INDEX `poi_category_idx` ON `poi` (`category`);--> statement-breakpoint
+CREATE INDEX `poi_name_idx` ON `poi` (`name`);--> statement-breakpoint
+CREATE INDEX `socialShares_userId_idx` ON `socialShares` (`userId`);--> statement-breakpoint
+CREATE INDEX `socialShares_platform_idx` ON `socialShares` (`platform`);--> statement-breakpoint
+CREATE INDEX `tours_partnerId_idx` ON `tours` (`partnerId`);--> statement-breakpoint
+CREATE INDEX `tours_active_idx` ON `tours` (`active`);--> statement-breakpoint
+CREATE INDEX `userBadges_userId_badgeId_idx` ON `userBadges` (`userId`,`badgeId`);--> statement-breakpoint
+CREATE INDEX `userChallenges_userId_challengeId_idx` ON `userChallenges` (`userId`,`challengeId`);--> statement-breakpoint
+CREATE INDEX `userXp_userId_idx` ON `userXp` (`userId`);--> statement-breakpoint
+CREATE INDEX `userXp_poiId_idx` ON `userXp` (`poiId`);--> statement-breakpoint
+CREATE INDEX `userXp_timestamp_idx` ON `userXp` (`timestamp`);--> statement-breakpoint
+CREATE INDEX `email_idx` ON `users` (`email`);--> statement-breakpoint
+CREATE INDEX `role_idx` ON `users` (`role`);
